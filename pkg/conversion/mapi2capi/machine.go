@@ -30,10 +30,14 @@ import (
 )
 
 const (
-	capiNamespace            = "openshift-cluster-api"
-	workerUserDataSecretName = "worker-user-data"
-	awsMachineKind           = "AWSMachine"
-	awsMachineTemplateKind   = "AWSMachineTemplate"
+	capiNamespace = "openshift-cluster-api"
+
+	workerUserDataSecretName     = "worker-user-data"
+
+	awsMachineKind               = "AWSMachine"
+	awsMachineTemplateKind       = "AWSMachineTemplate"
+	openstackMachineKind         = "OpenStackMachine"
+	openstackMachineTemplateKind = "OpenStackMachineTemplate"
 )
 
 var (

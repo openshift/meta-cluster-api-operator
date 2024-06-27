@@ -139,7 +139,7 @@ func (m *awsMachineAndInfra) toMachineAndInfrastructureMachine() (*capiv1.Machin
 }
 
 // ToMachineSetAndMachineTemplate converts a mapi2capi AWSMachineSetAndInfra into a CAPI MachineSet and CAPA AWSMachineTemplate.
-func (m *awsMachineSetAndInfra) ToMachineSetAndMachineTemplate() (*capiv1.MachineSet, client.Object, []string, error) {
+func (m *awsMachineSetAndInfra) ToMachineSetAndMachineTemplate() (*capiv1.MachineSet, client.Object, []string, error) { //nolint:dupl
 	var (
 		errs     []error
 		warnings []string
