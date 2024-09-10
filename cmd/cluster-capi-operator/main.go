@@ -20,6 +20,7 @@ import (
 	"os"
 	"time"
 
+	metal3v1 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta1"
 	"github.com/spf13/pflag"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -84,6 +85,7 @@ func initScheme(scheme *runtime.Scheme) {
 	utilruntime.Must(vspherev1.AddToScheme(scheme))
 	utilruntime.Must(mapiv1.AddToScheme(scheme))
 	utilruntime.Must(mapiv1beta1.AddToScheme(scheme))
+	utilruntime.Must(metal3v1.AddToScheme(scheme))
 }
 
 //nolint:funlen
@@ -220,26 +222,12 @@ func main() {
 
 	// Only setup reconcile controllers and webhooks when the platform is supported.
 	// This avoids unnecessary CAPI providers discovery, installs and reconciles when the platform is not supported.
-	switch platform {
-	case configv1.AWSPlatformType:
-		setupReconcilers(mgr, infra, platform, &awsv1.AWSCluster{}, containerImages, applyClient, apiextensionsClient, *managedNamespace)
+	infraClusterObject, supportedPlatform := getPlatformInfraObject(platform)
+
+	if supportedPlatform {
+		setupReconcilers(mgr, infra, platform, infraClusterObject, containerImages, applyClient, apiextensionsClient, *managedNamespace)
 		setupWebhooks(mgr)
-	case configv1.GCPPlatformType:
-		setupReconcilers(mgr, infra, platform, &gcpv1.GCPCluster{}, containerImages, applyClient, apiextensionsClient, *managedNamespace)
-		setupWebhooks(mgr)
-	case configv1.AzurePlatformType:
-		setupReconcilers(mgr, infra, platform, &azurev1.AzureCluster{}, containerImages, applyClient, apiextensionsClient, *managedNamespace)
-		setupWebhooks(mgr)
-	case configv1.PowerVSPlatformType:
-		setupReconcilers(mgr, infra, platform, &ibmpowervsv1.IBMPowerVSCluster{}, containerImages, applyClient, apiextensionsClient, *managedNamespace)
-		setupWebhooks(mgr)
-	case configv1.VSpherePlatformType:
-		setupReconcilers(mgr, infra, platform, &vspherev1.VSphereCluster{}, containerImages, applyClient, apiextensionsClient, *managedNamespace)
-		setupWebhooks(mgr)
-	case configv1.OpenStackPlatformType:
-		setupReconcilers(mgr, infra, platform, &openstackv1.OpenStackCluster{}, containerImages, applyClient, apiextensionsClient, *managedNamespace)
-		setupWebhooks(mgr)
-	default:
+	} else {
 		klog.Infof("detected platform %q is not supported, skipping capi controllers setup", platform)
 
 		// UnsupportedController runs on unsupported platforms, it watches and keeps the cluster-api ClusterObject up to date.
@@ -270,6 +258,23 @@ func main() {
 		klog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+func getPlatformInfraObject(platform configv1.PlatformType) (client.Object, bool) {
+	// Platform and InfrastructureObject mapping for supported platforms.
+	var platformInfraMapping = map[configv1.PlatformType]client.Object{
+		configv1.GCPPlatformType:       &gcpv1.GCPCluster{},
+		configv1.AzurePlatformType:     &azurev1.AzureCluster{},
+		configv1.PowerVSPlatformType:   &ibmpowervsv1.IBMPowerVSCluster{},
+		configv1.VSpherePlatformType:   &vspherev1.VSphereCluster{},
+		configv1.OpenStackPlatformType: &openstackv1.OpenStackCluster{},
+		configv1.BareMetalPlatformType: &metal3v1.Metal3Cluster{},
+		configv1.AWSPlatformType:       &awsv1.AWSCluster{},
+	}
+
+	infraObject, platformExists := platformInfraMapping[platform]
+
+	return infraObject, platformExists
 }
 
 func getReleaseVersion() string {

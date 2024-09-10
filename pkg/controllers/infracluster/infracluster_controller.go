@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
+	metal3v1 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta1"
 	ibmpowervsv1 "sigs.k8s.io/cluster-api-provider-ibmcloud/api/v1beta2"
 	openstackv1 "sigs.k8s.io/cluster-api-provider-openstack/api/v1beta1"
 
@@ -178,6 +179,7 @@ func (r *InfraClusterController) reconcileInfraCluster(ctx context.Context, log 
 func (r *InfraClusterController) ensureInfraCluster(ctx context.Context, log logr.Logger) (client.Object, error) {
 	var infraCluster client.Object
 	// TODO: implement InfraCluster generation for missing platforms.
+
 	switch r.Platform {
 	case configv1.AWSPlatformType:
 		var err error
@@ -193,20 +195,6 @@ func (r *InfraClusterController) ensureInfraCluster(ctx context.Context, log log
 		if err != nil {
 			return nil, fmt.Errorf("error ensuring GCPCluster: %w", err)
 		}
-	case configv1.AzurePlatformType:
-		azureCluster := &azurev1.AzureCluster{}
-		if err := r.Get(ctx, client.ObjectKey{Namespace: defaultCAPINamespace, Name: r.Infra.Status.InfrastructureName}, azureCluster); err != nil && !kerrors.IsNotFound(err) {
-			return nil, fmt.Errorf("error getting InfraCluster object: %w", err)
-		}
-
-		infraCluster = azureCluster
-	case configv1.PowerVSPlatformType:
-		powervsCluster := &ibmpowervsv1.IBMPowerVSCluster{}
-		if err := r.Get(ctx, client.ObjectKey{Namespace: defaultCAPINamespace, Name: r.Infra.Status.InfrastructureName}, powervsCluster); err != nil && !kerrors.IsNotFound(err) {
-			return nil, fmt.Errorf("error getting InfraCluster object: %w", err)
-		}
-
-		infraCluster = powervsCluster
 	case configv1.VSpherePlatformType:
 		var err error
 
@@ -214,18 +202,36 @@ func (r *InfraClusterController) ensureInfraCluster(ctx context.Context, log log
 		if err != nil {
 			return nil, fmt.Errorf("error getting InfraCluster object: %w", err)
 		}
-	case configv1.OpenStackPlatformType:
-		openstackCluster := &openstackv1.OpenStackCluster{}
-		if err := r.Get(ctx, client.ObjectKey{Namespace: defaultCAPINamespace, Name: r.Infra.Status.InfrastructureName}, openstackCluster); err != nil && !kerrors.IsNotFound(err) {
-			return nil, fmt.Errorf("error getting InfraCluster object: %w", err)
+	default:
+		infraCluster, supportedPlaform := getPlatformInfraObject(r.Platform)
+
+		if !supportedPlaform {
+			return nil, fmt.Errorf("skipping capi controllers setup on platform %s: %w", r.Platform, errPlatformNotSupported)
 		}
 
-		infraCluster = openstackCluster
-	default:
-		return nil, fmt.Errorf("skipping capi controllers setup on platform %s: %w", r.Platform, errPlatformNotSupported)
+		if err := r.Get(ctx, client.ObjectKey{Namespace: defaultCAPINamespace, Name: r.Infra.Status.InfrastructureName}, infraCluster); err != nil && !kerrors.IsNotFound(err) {
+			return nil, fmt.Errorf("error getting InfraCluster object: %w", err)
+		}
 	}
 
 	return infraCluster, nil
+}
+
+// getPlatformInfraObject gets the corresponding InfrastructureOject for the
+// supported platforms. AWS and VSphere are not here as their infrastructure
+// generation has been implemented separately.
+func getPlatformInfraObject(platform configv1.PlatformType) (client.Object, bool) {
+	// Platform and InfrastructureObject mapping for supported platforms.
+	var platformInfraMapping = map[configv1.PlatformType]client.Object{
+		configv1.AzurePlatformType:     &azurev1.AzureCluster{},
+		configv1.PowerVSPlatformType:   &ibmpowervsv1.IBMPowerVSCluster{},
+		configv1.OpenStackPlatformType: &openstackv1.OpenStackCluster{},
+		configv1.BareMetalPlatformType: &metal3v1.Metal3Cluster{},
+	}
+
+	infraObject, platformExists := platformInfraMapping[platform]
+
+	return infraObject, platformExists
 }
 
 // setAvailableCondition sets the ClusterOperator status condition to Available.
