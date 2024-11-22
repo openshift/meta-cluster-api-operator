@@ -76,7 +76,7 @@ func main() {
 	}
 
 	capiManagerOptions := capiflags.ManagerOptions{
-		MetricsBindAddr: ":8081",
+		DiagnosticsAddress: ":8081",
 	}
 
 	healthAddr := flag.String(
