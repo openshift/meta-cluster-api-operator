@@ -46,6 +46,8 @@ func (r *UnsupportedController) Reconcile(ctx context.Context, req ctrl.Request)
 	log := ctrl.LoggerFrom(ctx).WithName(controllerName)
 	log.Info(fmt.Sprintf("Reconciling %q ClusterObject", controllers.ClusterOperatorName))
 
+	// This controller is a special one that runs "solo" when we are on an unsupported platform,
+	// so it differs in behaviour from the other ones, and it directly sets the ClusterOperator's top level conditions(Available=true, ...).
 	if err := r.ClusterOperatorStatusClient.SetStatusAvailable(ctx, capiUnsupportedPlatformMsg); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to set conditions for %q ClusterObject: %w", controllers.ClusterOperatorName, err)
 	}

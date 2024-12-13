@@ -25,9 +25,11 @@ import (
 	"github.com/go-logr/logr"
 	configv1 "github.com/openshift/api/config/v1"
 	machinev1beta1 "github.com/openshift/api/machine/v1beta1"
+	"github.com/openshift/cluster-capi-operator/pkg/controllers"
 	consts "github.com/openshift/cluster-capi-operator/pkg/controllers"
 	"github.com/openshift/cluster-capi-operator/pkg/conversion/capi2mapi"
 	"github.com/openshift/cluster-capi-operator/pkg/conversion/mapi2capi"
+	"github.com/openshift/cluster-capi-operator/pkg/operatorstatus"
 	"github.com/openshift/cluster-capi-operator/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,6 +65,12 @@ var (
 )
 
 const (
+	// MachineSetSyncControllerAvailableCondition is the condition type that indicates the MachineSetSync controller is available.
+	MachineSetSyncControllerAvailableCondition = "MachineSetSyncControllerAvailable"
+
+	// MachineSetSyncControllerDegradedCondition is the condition type that indicates the MachineSetSync controller is degraded.
+	MachineSetSyncControllerDegradedCondition = "MachineSetSyncControllerDegraded"
+
 	reasonFailedToGetCAPIInfraResources          = "FailedToGetCAPIInfraResources"
 	reasonFailedToConvertCAPIMachineSetToMAPI    = "FailedToConvertCAPIMachineSetToMAPI"
 	reasonFailedToConvertMAPIMachineSetToCAPI    = "FailedToConvertMAPIMachineSetToCAPI"
@@ -77,8 +85,9 @@ const (
 	messageSuccessfullySynchronized = "Successfully synchronized CAPI MachineSet to MAPI"
 )
 
-// MachineSetSyncReconciler reconciles CAPI and MAPI MachineSets.
-type MachineSetSyncReconciler struct {
+// MachineSetSyncController reconciles CAPI and MAPI MachineSets.
+type MachineSetSyncController struct {
+	operatorstatus.ClusterOperatorStatusClient
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
@@ -90,7 +99,7 @@ type MachineSetSyncReconciler struct {
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *MachineSetSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *MachineSetSyncController) SetupWithManager(mgr ctrl.Manager) error {
 	infraMachineTemplate, err := getInfraMachineTemplateFromProvider(r.Platform)
 	if err != nil {
 		return fmt.Errorf("failed to get infrastructure machine template from Provider: %w", err)
@@ -131,7 +140,7 @@ func (r *MachineSetSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // Reconcile reconciles CAPI and MAPI MachineSets for their respective namespaces.
-func (r *MachineSetSyncReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
+func (r *MachineSetSyncController) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("namespace", req.Namespace, "name", req.Name)
 	ctx = logr.NewContext(ctx, logger)
 
@@ -145,6 +154,11 @@ func (r *MachineSetSyncReconciler) Reconcile(ctx context.Context, req reconcile.
 
 	if mapiMachineSet == nil && capiMachineSet == nil {
 		logger.Info("Both MAPI and CAPI machine sets not found, nothing to do")
+
+		if err := r.setControllerConditionsToNormal(ctx, logger); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to set conditions for machine set sync controller: %w", err)
+		}
+
 		return ctrl.Result{}, nil
 	}
 
@@ -153,11 +167,20 @@ func (r *MachineSetSyncReconciler) Reconcile(ctx context.Context, req reconcile.
 		return ctrl.Result{}, nil
 	}
 
-	return r.syncMachineSets(ctx, mapiMachineSet, capiMachineSet)
+	result, err := r.syncMachineSets(ctx, mapiMachineSet, capiMachineSet)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to sync machine sets: %w", err)
+	}
+
+	if err := r.setControllerConditionsToNormal(ctx, logger); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to set conditions for machine set sync controller: %w", err)
+	}
+
+	return result, nil
 }
 
 // fetchMachineSets fetches both MAPI and CAPI MachineSets.
-func (r *MachineSetSyncReconciler) fetchMachineSets(ctx context.Context, name string) (*machinev1beta1.MachineSet, *capiv1beta1.MachineSet, error) {
+func (r *MachineSetSyncController) fetchMachineSets(ctx context.Context, name string) (*machinev1beta1.MachineSet, *capiv1beta1.MachineSet, error) {
 	logger := log.FromContext(ctx)
 
 	mapiMachineSet := &machinev1beta1.MachineSet{}
@@ -184,7 +207,7 @@ func (r *MachineSetSyncReconciler) fetchMachineSets(ctx context.Context, name st
 }
 
 // fetchCAPIInfraResources fetches the provider specific infrastructure resources depending on which provider is set.
-func (r *MachineSetSyncReconciler) fetchCAPIInfraResources(ctx context.Context, capiMachineSet *capiv1beta1.MachineSet) (client.Object, client.Object, error) {
+func (r *MachineSetSyncController) fetchCAPIInfraResources(ctx context.Context, capiMachineSet *capiv1beta1.MachineSet) (client.Object, client.Object, error) {
 	var infraCluster, infraMachineTemplate client.Object
 
 	infraClusterKey := client.ObjectKey{
@@ -218,7 +241,7 @@ func (r *MachineSetSyncReconciler) fetchCAPIInfraResources(ctx context.Context, 
 }
 
 // syncMachineSets synchronizes MachineSets based on the authoritative API.
-func (r *MachineSetSyncReconciler) syncMachineSets(ctx context.Context, mapiMachineSet *machinev1beta1.MachineSet, capiMachineSet *capiv1beta1.MachineSet) (ctrl.Result, error) {
+func (r *MachineSetSyncController) syncMachineSets(ctx context.Context, mapiMachineSet *machinev1beta1.MachineSet, capiMachineSet *capiv1beta1.MachineSet) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	authoritativeAPI := mapiMachineSet.Status.AuthoritativeAPI
@@ -242,7 +265,7 @@ func (r *MachineSetSyncReconciler) syncMachineSets(ctx context.Context, mapiMach
 }
 
 // reconcileMAPIMachineSetToCAPIMachineSet reconciles a MAPI MachineSet to a CAPI MachineSet.
-func (r *MachineSetSyncReconciler) reconcileMAPIMachineSetToCAPIMachineSet(ctx context.Context, mapiMachineSet *machinev1beta1.MachineSet, capiMachineSet *capiv1beta1.MachineSet) (ctrl.Result, error) {
+func (r *MachineSetSyncController) reconcileMAPIMachineSetToCAPIMachineSet(ctx context.Context, mapiMachineSet *machinev1beta1.MachineSet, capiMachineSet *capiv1beta1.MachineSet) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	newCAPIMachineSet, newCAPIInfraMachineTemplate, warns, err := r.convertMAPIToCAPIMachineSet(mapiMachineSet)
@@ -293,7 +316,7 @@ func (r *MachineSetSyncReconciler) reconcileMAPIMachineSetToCAPIMachineSet(ctx c
 
 // reconcileCAPIMachineSetToMAPIMachineSet reconciles a CAPI MachineSet to a
 // MAPI MachineSet.
-func (r *MachineSetSyncReconciler) reconcileCAPIMachineSetToMAPIMachineSet(ctx context.Context, capiMachineSet *capiv1beta1.MachineSet, mapiMachineSet *machinev1beta1.MachineSet) (ctrl.Result, error) {
+func (r *MachineSetSyncController) reconcileCAPIMachineSetToMAPIMachineSet(ctx context.Context, capiMachineSet *capiv1beta1.MachineSet, mapiMachineSet *machinev1beta1.MachineSet) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	infraCluster, infraMachineTemplate, err := r.fetchCAPIInfraResources(ctx, capiMachineSet)
@@ -357,7 +380,7 @@ func (r *MachineSetSyncReconciler) reconcileCAPIMachineSetToMAPIMachineSet(ctx c
 }
 
 // convertCAPIToMAPIMachineSet converts a CAPI MachineSet to a MAPI MachineSet, selecting the correct converter based on the platform.
-func (r *MachineSetSyncReconciler) convertCAPIToMAPIMachineSet(capiMachineSet *capiv1beta1.MachineSet, infraMachineTemplate client.Object, infraCluster client.Object) (*machinev1beta1.MachineSet, []string, error) {
+func (r *MachineSetSyncController) convertCAPIToMAPIMachineSet(capiMachineSet *capiv1beta1.MachineSet, infraMachineTemplate client.Object, infraCluster client.Object) (*machinev1beta1.MachineSet, []string, error) {
 	switch r.Platform {
 	case configv1.AWSPlatformType:
 		awsMachineTemplate, ok := infraMachineTemplate.(*awscapiv1beta1.AWSMachineTemplate)
@@ -380,7 +403,7 @@ func (r *MachineSetSyncReconciler) convertCAPIToMAPIMachineSet(capiMachineSet *c
 }
 
 // convertMAPIToCAPIMachineSet converts a MAPI MachineSet to a CAPI MachineSet, selecting the correct converter based on the platform.
-func (r *MachineSetSyncReconciler) convertMAPIToCAPIMachineSet(mapiMachineSet *machinev1beta1.MachineSet) (*capiv1beta1.MachineSet, client.Object, []string, error) {
+func (r *MachineSetSyncController) convertMAPIToCAPIMachineSet(mapiMachineSet *machinev1beta1.MachineSet) (*capiv1beta1.MachineSet, client.Object, []string, error) {
 	switch r.Platform {
 	case configv1.AWSPlatformType:
 		return mapi2capi.FromAWSMachineSetAndInfra(mapiMachineSet, r.Infra).ToMachineSetAndMachineTemplate() //nolint:wrapcheck
@@ -392,7 +415,7 @@ func (r *MachineSetSyncReconciler) convertMAPIToCAPIMachineSet(mapiMachineSet *m
 // updateSynchronizedConditionWithPatch updates the synchronized condition
 // using a server side apply patch. We do this to force ownership of the
 // 'Synchronized' condition and 'SynchronizedGeneration'.
-func (r *MachineSetSyncReconciler) updateSynchronizedConditionWithPatch(ctx context.Context, mapiMachineSet *machinev1beta1.MachineSet, status corev1.ConditionStatus, reason, message string, generation *int64) error {
+func (r *MachineSetSyncController) updateSynchronizedConditionWithPatch(ctx context.Context, mapiMachineSet *machinev1beta1.MachineSet, status corev1.ConditionStatus, reason, message string, generation *int64) error {
 	var severity machinev1beta1.ConditionSeverity
 	if status == corev1.ConditionTrue {
 		severity = machinev1beta1.ConditionSeverityNone
@@ -427,7 +450,7 @@ func (r *MachineSetSyncReconciler) updateSynchronizedConditionWithPatch(ctx cont
 }
 
 // createOrUpdateCAPIInfraMachineTemplate creates a CAPI infra machine template from a MAPI machine set, or updates if it exists and it is out of date.
-func (r *MachineSetSyncReconciler) createOrUpdateCAPIInfraMachineTemplate(ctx context.Context, mapiMachineSet *machinev1beta1.MachineSet, infraMachineTemplate client.Object, newCAPIInfraMachineTemplate client.Object) (ctrl.Result, error) { //nolint:unparam
+func (r *MachineSetSyncController) createOrUpdateCAPIInfraMachineTemplate(ctx context.Context, mapiMachineSet *machinev1beta1.MachineSet, infraMachineTemplate client.Object, newCAPIInfraMachineTemplate client.Object) (ctrl.Result, error) { //nolint:unparam
 	logger := log.FromContext(ctx)
 
 	if infraMachineTemplate == nil {
@@ -486,7 +509,7 @@ func (r *MachineSetSyncReconciler) createOrUpdateCAPIInfraMachineTemplate(ctx co
 }
 
 // createOrUpdateCAPIMachineSet creates a CAPI machine set from a MAPI one, or updates if it exists and it is out of date.
-func (r *MachineSetSyncReconciler) createOrUpdateCAPIMachineSet(ctx context.Context, mapiMachineSet *machinev1beta1.MachineSet, capiMachineSet *capiv1beta1.MachineSet, newCAPIMachineSet *capiv1beta1.MachineSet) (ctrl.Result, error) { //nolint:unparam
+func (r *MachineSetSyncController) createOrUpdateCAPIMachineSet(ctx context.Context, mapiMachineSet *machinev1beta1.MachineSet, capiMachineSet *capiv1beta1.MachineSet, newCAPIMachineSet *capiv1beta1.MachineSet) (ctrl.Result, error) { //nolint:unparam
 	logger := log.FromContext(ctx)
 
 	if capiMachineSet == nil {
@@ -605,4 +628,29 @@ func getResourceVersion(obj client.Object) string {
 	}
 
 	return obj.GetResourceVersion()
+}
+
+// setControllerConditionsToNormal sets the MachineSetSyncController conditions to the normal state.
+func (r *MachineSetSyncController) setControllerConditionsToNormal(ctx context.Context, log logr.Logger) error {
+	co, err := r.GetOrCreateClusterOperator(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cluster operator: %w", err)
+	}
+
+	conds := []configv1.ClusterOperatorStatusCondition{
+		operatorstatus.NewClusterOperatorStatusCondition(MachineSetSyncControllerAvailableCondition, configv1.ConditionTrue, operatorstatus.ReasonAsExpected,
+			"MachineSet Sync Controller works as expected"),
+		operatorstatus.NewClusterOperatorStatusCondition(MachineSetSyncControllerDegradedCondition, configv1.ConditionFalse, operatorstatus.ReasonAsExpected,
+			"MachineSet Sync Controller works as expected"),
+	}
+
+	co.Status.Versions = []configv1.OperandVersion{{Name: controllers.OperatorVersionKey, Version: r.ReleaseVersion}}
+
+	log.V(2).Info("MachineSet Sync Controller is Available")
+
+	if err := r.SyncStatus(ctx, co, conds); err != nil {
+		return fmt.Errorf("failed to sync status: %w", err)
+	}
+
+	return nil
 }

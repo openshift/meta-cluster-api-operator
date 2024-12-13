@@ -41,12 +41,18 @@ import (
 )
 
 const (
+	// KubeconfigControllerAvailableCondition is the condition type that indicates the Kubeconfig controller is available.
+	KubeconfigControllerAvailableCondition = "KubeconfigControllerAvailable"
+
+	// KubeconfigControllerDegradedCondition is the condition type that indicates the Kubeconfig controller is degraded.
+	KubeconfigControllerDegradedCondition = "KubeconfigControllerDegraded"
+
 	controllerName  = "KubeconfigController"
 	tokenSecretName = "cluster-capi-operator-secret" //nolint
 )
 
-// KubeconfigReconciler reconciles a ClusterOperator object.
-type KubeconfigReconciler struct {
+// KubeconfigController reconciles a ClusterOperator object.
+type KubeconfigController struct {
 	operatorstatus.ClusterOperatorStatusClient
 	Scheme      *runtime.Scheme
 	RestCfg     *rest.Config
@@ -54,7 +60,7 @@ type KubeconfigReconciler struct {
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *KubeconfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *KubeconfigController) SetupWithManager(mgr ctrl.Manager) error {
 	if err := ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
 		For(
@@ -74,25 +80,23 @@ func (r *KubeconfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // Reconcile reconciles the kubeconfig secret.
-func (r *KubeconfigReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
+func (r *KubeconfigController) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx).WithName(controllerName)
 
 	infra := &configv1.Infrastructure{}
 	if err := r.Get(ctx, client.ObjectKey{Name: controllers.InfrastructureResourceName}, infra); err != nil {
 		log.Error(err, "Unable to retrieve Infrastructure object")
 
-		if err := r.SetStatusDegraded(ctx, err); err != nil {
-			return ctrl.Result{}, fmt.Errorf("error syncing ClusterOperatorStatus: %w", err)
-		}
-
+		// TODO: set controller as Available: false.
 		return ctrl.Result{}, fmt.Errorf("unable to retrieve Infrastructure object: %w", err)
 	}
 
 	if infra.Status.PlatformStatus == nil {
 		log.Info("No platform status exists in infrastructure object. Skipping kubeconfig reconciliation...")
 
-		if err := r.SetStatusAvailable(ctx, ""); err != nil {
-			return ctrl.Result{}, fmt.Errorf("error syncing ClusterOperatorStatus: %w", err)
+		if err := r.setControllerConditionsToNormal(ctx, log); err != nil {
+			// TODO: set controller as Available: false.
+			return ctrl.Result{}, fmt.Errorf("failed to set conditions for kubeconfig controller: %w", err)
 		}
 
 		return ctrl.Result{}, nil
@@ -106,22 +110,20 @@ func (r *KubeconfigReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (c
 	if err != nil {
 		log.Error(err, "Error reconciling kubeconfig")
 
-		if err := r.SetStatusDegraded(ctx, err); err != nil {
-			return ctrl.Result{}, fmt.Errorf("error syncing ClusterOperatorStatus: %w", err)
-		}
-
+		// TODO: set controller as Available: false.
 		return ctrl.Result{}, fmt.Errorf("error reconciling kubeconfig: %w", err)
 	}
 
-	if err := r.SetStatusAvailable(ctx, ""); err != nil {
-		return ctrl.Result{}, fmt.Errorf("error syncing ClusterOperatorStatus: %w", err)
+	if err := r.setControllerConditionsToNormal(ctx, log); err != nil {
+		// TODO: set controller as Available: false.
+		return ctrl.Result{}, fmt.Errorf("failed to set conditions for kubeconfig controller: %w", err)
 	}
 
 	return res, nil
 }
 
-func (r *KubeconfigReconciler) reconcileKubeconfig(ctx context.Context, log logr.Logger) (ctrl.Result, error) {
-	// Get the token secret
+func (r *KubeconfigController) reconcileKubeconfig(ctx context.Context, log logr.Logger) (ctrl.Result, error) {
+	// Get the token secret.
 	tokenSecret := &corev1.Secret{}
 	tokenSecretKey := client.ObjectKey{
 		Name:      tokenSecretName,
@@ -149,7 +151,7 @@ func (r *KubeconfigReconciler) reconcileKubeconfig(ctx context.Context, log logr
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
 
-	// Generate kubeconfig
+	// Generate kubeconfig.
 	kubeconfig, err := generateKubeconfig(kubeconfigOptions{
 		token:            tokenSecret.Data["token"],
 		caCert:           tokenSecret.Data["ca.crt"],
@@ -161,7 +163,7 @@ func (r *KubeconfigReconciler) reconcileKubeconfig(ctx context.Context, log logr
 		return ctrl.Result{}, fmt.Errorf("error generating kubeconfig: %w", err)
 	}
 
-	// Create a secret with generated kubeconfig
+	// Create a secret with generated kubeconfig.
 	out, err := clientcmd.Write(*kubeconfig)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("error writing kubeconfig: %w", err)
@@ -197,4 +199,29 @@ func newKubeConfigSecret(clusterName string, data []byte) *corev1.Secret {
 		},
 		Type: clusterv1.ClusterSecretType,
 	}
+}
+
+// setControllerConditionsToNormal sets the KubeconfigController conditions to the normal state.
+func (r *KubeconfigController) setControllerConditionsToNormal(ctx context.Context, log logr.Logger) error {
+	co, err := r.GetOrCreateClusterOperator(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cluster operator: %w", err)
+	}
+
+	conds := []configv1.ClusterOperatorStatusCondition{
+		operatorstatus.NewClusterOperatorStatusCondition(KubeconfigControllerAvailableCondition, configv1.ConditionTrue, operatorstatus.ReasonAsExpected,
+			"Kubeconfig Controller works as expected"),
+		operatorstatus.NewClusterOperatorStatusCondition(KubeconfigControllerDegradedCondition, configv1.ConditionFalse, operatorstatus.ReasonAsExpected,
+			"Kubeconfig Controller works as expected"),
+	}
+
+	co.Status.Versions = []configv1.OperandVersion{{Name: controllers.OperatorVersionKey, Version: r.ReleaseVersion}}
+
+	log.V(2).Info("Kubeconfig Controller is Available")
+
+	if err := r.SyncStatus(ctx, co, conds); err != nil {
+		return fmt.Errorf("failed to sync status: %w", err)
+	}
+
+	return nil
 }

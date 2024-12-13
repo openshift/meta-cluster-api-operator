@@ -216,7 +216,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	machineSyncReconciler := machinesync.MachineSyncReconciler{
+	machineSyncController := machinesync.MachineSyncController{
 		Infra:    infra,
 		Platform: provider,
 
@@ -224,12 +224,12 @@ func main() {
 		CAPINamespace: *capiManagedNamespace,
 	}
 
-	if err := machineSyncReconciler.SetupWithManager(mgr); err != nil {
-		klog.Error(err, "failed to set up machine sync reconciler with manager")
+	if err := machineSyncController.SetupWithManager(mgr); err != nil {
+		klog.Error(err, "failed to set up machine sync controller with manager")
 		os.Exit(1)
 	}
 
-	machineSetSyncReconciler := machinesetsync.MachineSetSyncReconciler{
+	machineSetSyncController := machinesetsync.MachineSetSyncController{
 		Platform: provider,
 		Infra:    infra,
 
@@ -237,8 +237,8 @@ func main() {
 		CAPINamespace: *capiManagedNamespace,
 	}
 
-	if err := machineSetSyncReconciler.SetupWithManager(mgr); err != nil {
-		klog.Error(err, "failed to set up machineset sync reconciler with manager")
+	if err := machineSetSyncController.SetupWithManager(mgr); err != nil {
+		klog.Error(err, "failed to set up machineset sync controller with manager")
 		os.Exit(1)
 	}
 
