@@ -198,7 +198,7 @@ func awsProviderSpecFuzzerFuncs(codecs runtimeserializer.CodecFactory) []interfa
 			ps.ObjectMeta = metav1.ObjectMeta{}
 			ps.CredentialsSecret = nil
 
-			// At lest one device mapping must have no device name.
+			// At least one device mapping must have no device name.
 			rootFound := false
 			for i := range ps.BlockDevices {
 				if ps.BlockDevices[i].DeviceName == nil {
