@@ -13,9 +13,9 @@ require (
 	github.com/klauspost/compress v1.17.9
 	github.com/onsi/ginkgo/v2 v2.21.0
 	github.com/onsi/gomega v1.35.1
-	github.com/openshift/api v0.0.0-20241009131553-a1523024209f
+	github.com/openshift/api v0.0.0-20250106182855-361e35fd82e5
 	github.com/openshift/client-go v0.0.0-20241001162912-da6d55e4611f
-	github.com/openshift/cluster-api-actuator-pkg/testutils v0.0.0-20241204163806-84b171115300
+	github.com/openshift/cluster-api-actuator-pkg/testutils v0.0.0-20250109181340-d6748067a7c5
 	github.com/openshift/cluster-control-plane-machine-set-operator v0.0.0-20241008085214-8d85b2cb2c1d
 	github.com/openshift/library-go v0.0.0-20240919205913-c96b82b3762b
 	github.com/pkg/errors v0.9.1
