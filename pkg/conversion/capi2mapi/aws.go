@@ -226,7 +226,7 @@ func awsRawExtensionFromProviderSpec(spec *mapiv1.AWSMachineProviderConfig) (*ru
 }
 
 // ToMachineSet converts a capi2mapi MachineAndAWSMachineTemplate into a MAPI MachineSet.
-func (m machineSetAndAWSMachineTemplateAndAWSCluster) ToMachineSet() (*mapiv1.MachineSet, []string, error) {
+func (m machineSetAndAWSMachineTemplateAndAWSCluster) ToMachineSet() (*mapiv1.MachineSet, []string, error) { //nolint:dupl
 	if m.machineSet == nil || m.template == nil || m.awsCluster == nil || m.machineAndAWSMachineAndAWSCluster == nil {
 		return nil, nil, errCAPIMachineSetAWSMachineTemplateAWSClusterCannotBeNil
 	}
