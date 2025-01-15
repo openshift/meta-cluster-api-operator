@@ -91,7 +91,7 @@ func (r *InfraClusterController) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("error during reconcile: %w", err)
 	}
 
-	if err := r.setAvailableCondition(ctx, log); err != nil {
+	if err := r.setControllerConditionsToNormal(ctx, log); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to set conditions for InfraCluster controller: %w", err)
 	}
 
@@ -227,8 +227,8 @@ func (r *InfraClusterController) ensureInfraCluster(ctx context.Context, log log
 	return infraCluster, nil
 }
 
-// setAvailableCondition sets the ClusterOperator status condition to Available.
-func (r *InfraClusterController) setAvailableCondition(ctx context.Context, log logr.Logger) error {
+// setControllerConditionsToNormal sets the InfraClusterController conditions to the normal state.
+func (r *InfraClusterController) setControllerConditionsToNormal(ctx context.Context, log logr.Logger) error {
 	co, err := r.GetOrCreateClusterOperator(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get cluster operator: %w", err)

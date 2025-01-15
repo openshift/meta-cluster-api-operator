@@ -53,11 +53,11 @@ import (
 	mapiv1beta1 "github.com/openshift/api/machine/v1beta1"
 	"github.com/openshift/cluster-capi-operator/pkg/controllers"
 	"github.com/openshift/cluster-capi-operator/pkg/controllers/capiinstaller"
+	"github.com/openshift/cluster-capi-operator/pkg/controllers/clusteroperator"
 	"github.com/openshift/cluster-capi-operator/pkg/controllers/corecluster"
 	"github.com/openshift/cluster-capi-operator/pkg/controllers/infracluster"
 	"github.com/openshift/cluster-capi-operator/pkg/controllers/kubeconfig"
 	"github.com/openshift/cluster-capi-operator/pkg/controllers/secretsync"
-	"github.com/openshift/cluster-capi-operator/pkg/controllers/unsupported"
 	"github.com/openshift/cluster-capi-operator/pkg/operatorstatus"
 	"github.com/openshift/cluster-capi-operator/pkg/util"
 	"github.com/openshift/cluster-capi-operator/pkg/webhook"
@@ -266,8 +266,9 @@ func setupPlatformReconcilers(mgr manager.Manager, infra *configv1.Infrastructur
 		azureCloudEnvironment := getAzureCloudEnvironment(infra.Status.PlatformStatus)
 		if azureCloudEnvironment == configv1.AzureStackCloud {
 			klog.Infof("Detected Azure Cloud Environment %q on platform %q is not supported, skipping capi controllers setup", azureCloudEnvironment, platform)
-			setupUnsupportedController(mgr, managedNamespace)
+			setupClusterOperatorController(mgr, managedNamespace, true)
 		} else {
+			// The ClusterOperator Controller must run in all cases.
 			setupReconcilers(mgr, infra, platform, &azurev1.AzureCluster{}, containerImages, applyClient, apiextensionsClient, managedNamespace)
 			setupWebhooks(mgr)
 		}
@@ -282,35 +283,39 @@ func setupPlatformReconcilers(mgr manager.Manager, infra *configv1.Infrastructur
 		setupWebhooks(mgr)
 	default:
 		klog.Infof("Detected platform %q is not supported, skipping capi controllers setup", platform)
-		setupUnsupportedController(mgr, managedNamespace)
+		// The ClusterOperator Controller must run under all circumstances as it manages the ClusterOperator object for this operator.
+		setupClusterOperatorController(mgr, managedNamespace, true)
 	}
 }
 
 func setupReconcilers(mgr manager.Manager, infra *configv1.Infrastructure, platform configv1.PlatformType, infraClusterObject client.Object, containerImages map[string]string, applyClient *kubernetes.Clientset, apiextensionsClient *apiextensionsclient.Clientset, managedNamespace string) {
-	if err := (&corecluster.CoreClusterReconciler{
+	// The ClusterOperator Controller must run under all circumstances as it manages the ClusterOperator object for this operator.
+	setupClusterOperatorController(mgr, managedNamespace, false)
+
+	if err := (&corecluster.CoreClusterController{
 		ClusterOperatorStatusClient: getClusterOperatorStatusClient(mgr, "cluster-capi-operator-cluster-resource-controller", managedNamespace),
 		Cluster:                     &clusterv1.Cluster{},
 		Platform:                    platform,
 		Infra:                       infra,
 	}).SetupWithManager(mgr); err != nil {
-		klog.Error(err, "unable to create controller", "controller", "CoreCluster")
+		klog.Error(err, "unable to create core cluster controller", "controller", "CoreCluster")
 		os.Exit(1)
 	}
 
-	if err := (&secretsync.UserDataSecretController{
-		ClusterOperatorStatusClient: getClusterOperatorStatusClient(mgr, "cluster-capi-operator-user-data-secret-controller", managedNamespace),
+	if err := (&secretsync.SecretSyncController{
+		ClusterOperatorStatusClient: getClusterOperatorStatusClient(mgr, "cluster-capi-operator-secret-sync-controller", managedNamespace),
 		Scheme:                      mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		klog.Error(err, "unable to create user-data-secret controller", "controller", "UserDataSecret")
+		klog.Error(err, "unable to create secret sync controller", "controller", "UserDataSecret")
 		os.Exit(1)
 	}
 
-	if err := (&kubeconfig.KubeconfigReconciler{
+	if err := (&kubeconfig.KubeconfigController{
 		ClusterOperatorStatusClient: getClusterOperatorStatusClient(mgr, "cluster-capi-operator-kubeconfig-controller", managedNamespace),
 		Scheme:                      mgr.GetScheme(),
 		RestCfg:                     mgr.GetConfig(),
 	}).SetupWithManager(mgr); err != nil {
-		klog.Error(err, "unable to create controller", "controller", "Kubeconfig")
+		klog.Error(err, "unable to create kubeconfig controller", "controller", "Kubeconfig")
 		os.Exit(1)
 	}
 
@@ -372,13 +377,14 @@ func getAzureCloudEnvironment(ps *configv1.PlatformStatus) configv1.AzureCloudEn
 	return ps.Azure.CloudName
 }
 
-func setupUnsupportedController(mgr manager.Manager, ns string) {
-	// UnsupportedController runs on unsupported platforms, it watches and keeps the cluster-api ClusterObject up to date.
-	if err := (&unsupported.UnsupportedController{
-		ClusterOperatorStatusClient: getClusterOperatorStatusClient(mgr, "cluster-capi-operator-unsupported-controller", ns),
+func setupClusterOperatorController(mgr manager.Manager, ns string, isUnsupportedPlatform bool) {
+	// ClusterOperator watches and keeps the cluster-api ClusterObject up to date.
+	if err := (&clusteroperator.ClusterOperatorController{
+		ClusterOperatorStatusClient: getClusterOperatorStatusClient(mgr, "cluster-capi-operator-clusteroperator-controller", ns),
 		Scheme:                      mgr.GetScheme(),
+		IsUnsupportedPlatform:       isUnsupportedPlatform,
 	}).SetupWithManager(mgr); err != nil {
-		klog.Error(err, "unable to create unsupported controller", "controller", "Unsupported")
+		klog.Error(err, "unable to create clusteroperator controller", "controller", "ClusterOperator")
 		os.Exit(1)
 	}
 }
