@@ -96,12 +96,12 @@ func (m machineAndAWSMachineAndAWSCluster) toProviderSpec() (*mapiv1.AWSMachineP
 
 	fldPath := field.NewPath("spec")
 
-	mapaTenancy, err := convertAWSTenancyToMAPI(fldPath.Child("tenancy"), m.awsMachine.Spec.Tenancy)
+	mapaTenancy, err := convertCAPATenancyToMAPA(fldPath.Child("tenancy"), m.awsMachine.Spec.Tenancy)
 	if err != nil {
 		errors = append(errors, err)
 	}
 
-	mapiAWSMetadataOptions, warn, errs := convertAWSMetadataOptionsToMAPI(fldPath.Child("instanceMetadataOptions"), m.awsMachine.Spec.InstanceMetadataOptions)
+	mapiAWSMetadataOptions, warn, errs := convertCAPAMetadataOptionsToMAPA(fldPath.Child("instanceMetadataOptions"), m.awsMachine.Spec.InstanceMetadataOptions)
 	if errs != nil {
 		errors = append(errors, errs...)
 	}
@@ -123,7 +123,7 @@ func (m machineAndAWSMachineAndAWSCluster) toProviderSpec() (*mapiv1.AWSMachineP
 			ID: m.awsMachine.Spec.AMI.ID,
 		},
 		InstanceType: m.awsMachine.Spec.InstanceType,
-		Tags:         convertAWSTagsToMAPI(m.awsMachine.Spec.AdditionalTags),
+		Tags:         convertCAPATagsToMAPA(m.awsMachine.Spec.AdditionalTags),
 		IAMInstanceProfile: &mapiv1.AWSResourceReference{
 			ID: &m.awsMachine.Spec.IAMInstanceProfile,
 		},
@@ -132,17 +132,17 @@ func (m machineAndAWSMachineAndAWSCluster) toProviderSpec() (*mapiv1.AWSMachineP
 		KeyName: m.awsMachine.Spec.SSHKeyName,
 		// DeviceIndex - OCPCLOUD-2707: Value must always be zero. No other values are valid in MAPA even though the value is configurable.
 		PublicIP:             m.awsMachine.Spec.PublicIP,
-		NetworkInterfaceType: mapiv1.AWSENANetworkInterfaceType,                                          // TODO(OCPCLOUD-2708) This is the default value for MAPA, but other values are not configurable in CAPA.
-		SecurityGroups:       convertAWSSecurityGroupstoMAPI(m.awsMachine.Spec.AdditionalSecurityGroups), // OCPCLOUD-2712: We need to ensure that this is the correct way to convert the security groups.
-		Subnet:               convertAWSResourceReferenceToMAPI(ptr.Deref(m.awsMachine.Spec.Subnet, capav1.AWSResourceReference{})),
+		NetworkInterfaceType: mapiv1.AWSENANetworkInterfaceType,                                           // TODO(OCPCLOUD-2708) This is the default value for MAPA, but other values are not configurable in CAPA.
+		SecurityGroups:       convertCAPASecurityGroupstoMAPA(m.awsMachine.Spec.AdditionalSecurityGroups), // OCPCLOUD-2712: We need to ensure that this is the correct way to convert the security groups.
+		Subnet:               convertCAPAResourceReferenceToMAPA(ptr.Deref(m.awsMachine.Spec.Subnet, capav1.AWSResourceReference{})),
 		Placement: mapiv1.Placement{
 			AvailabilityZone: ptr.Deref(m.machine.Spec.FailureDomain, ""),
 			Tenancy:          mapaTenancy,
 			Region:           m.awsCluster.Spec.Region,
 		},
 		// LoadBalancers - TODO(OCPCLOUD-2709) Not supported for workers.
-		BlockDevices:            convertAWSBlockDeviceMappingSpecToMAPI(m.awsMachine.Spec.RootVolume, m.awsMachine.Spec.NonRootVolumes),
-		SpotMarketOptions:       convertAWSSpotMarketOptionsToMAPI(m.awsMachine.Spec.SpotMarketOptions),
+		BlockDevices:            convertCAPAVolumesToMAPA(m.awsMachine.Spec.RootVolume, m.awsMachine.Spec.NonRootVolumes),
+		SpotMarketOptions:       convertCAPASpotMarketOptionsToMAPA(m.awsMachine.Spec.SpotMarketOptions),
 		MetadataServiceOptions:  mapiAWSMetadataOptions,
 		PlacementGroupName:      m.awsMachine.Spec.PlacementGroupName,
 		PlacementGroupPartition: convertAWSPlacementGroupPartition(m.awsMachine.Spec.PlacementGroupPartition),
@@ -159,7 +159,7 @@ func (m machineAndAWSMachineAndAWSCluster) toProviderSpec() (*mapiv1.AWSMachineP
 	// Below this line are fields not used from the CAPI AWSMachine.
 
 	// ProviderID - Populated at a different level.
-	// IntsanceID - Ignore - Is a subset of providerID.
+	// InstanceID - Ignore - Is a subset of providerID.
 	// Ignition - Ignore - Only has a version field and we force this to a particular value.
 
 	// There are quite a few unsupported fields, so break them out for now.
@@ -188,7 +188,7 @@ func (m machineAndAWSMachineAndAWSCluster) ToMachine() (*mapiv1.Machine, []strin
 		errors = append(errors, err...)
 	}
 
-	awsRawExt, errRaw := RawExtensionFromProviderSpec(mapaSpec)
+	awsRawExt, errRaw := awsRawExtensionFromProviderSpec(mapaSpec)
 	if errRaw != nil {
 		return nil, nil, fmt.Errorf("unable to convert AWS providerSpec to raw extension: %w", errRaw)
 	}
@@ -209,8 +209,24 @@ func (m machineAndAWSMachineAndAWSCluster) ToMachine() (*mapiv1.Machine, []strin
 	return mapiMachine, warnings, nil
 }
 
+// awsRawExtensionFromProviderSpec marshals the machine provider spec.
+func awsRawExtensionFromProviderSpec(spec *mapiv1.AWSMachineProviderConfig) (*runtime.RawExtension, error) {
+	if spec == nil {
+		return &runtime.RawExtension{}, nil
+	}
+
+	rawBytes, err := json.Marshal(spec)
+	if err != nil {
+		return nil, fmt.Errorf("error marshalling providerSpec: %w", err)
+	}
+
+	return &runtime.RawExtension{
+		Raw: rawBytes,
+	}, nil
+}
+
 // ToMachineSet converts a capi2mapi MachineAndAWSMachineTemplate into a MAPI MachineSet.
-func (m machineSetAndAWSMachineTemplateAndAWSCluster) ToMachineSet() (*mapiv1.MachineSet, []string, error) {
+func (m machineSetAndAWSMachineTemplateAndAWSCluster) ToMachineSet() (*mapiv1.MachineSet, []string, error) { //nolint:dupl
 	if m.machineSet == nil || m.template == nil || m.awsCluster == nil || m.machineAndAWSMachineAndAWSCluster == nil {
 		return nil, nil, errCAPIMachineSetAWSMachineTemplateAWSClusterCannotBeNil
 	}
@@ -234,38 +250,22 @@ func (m machineSetAndAWSMachineTemplateAndAWSCluster) ToMachineSet() (*mapiv1.Ma
 		errors = append(errors, err)
 	}
 
+	if len(errors) > 0 {
+		return nil, warnings, utilerrors.NewAggregate(errors)
+	}
+
 	mapiMachineSet.Spec.Template.Spec = mapaMachine.Spec
 
 	// Copy the labels and annotations from the Machine to the template.
 	mapiMachineSet.Spec.Template.ObjectMeta.Annotations = mapaMachine.ObjectMeta.Annotations
 	mapiMachineSet.Spec.Template.ObjectMeta.Labels = mapaMachine.ObjectMeta.Labels
 
-	if len(errors) > 0 {
-		return nil, warnings, utilerrors.NewAggregate(errors)
-	}
-
 	return mapiMachineSet, warnings, nil
 }
 
 // Conversion helpers.
 
-// RawExtensionFromProviderSpec marshals the machine provider spec.
-func RawExtensionFromProviderSpec(spec *mapiv1.AWSMachineProviderConfig) (*runtime.RawExtension, error) {
-	if spec == nil {
-		return &runtime.RawExtension{}, nil
-	}
-
-	rawBytes, err := json.Marshal(spec)
-	if err != nil {
-		return nil, fmt.Errorf("error marshalling providerSpec: %w", err)
-	}
-
-	return &runtime.RawExtension{
-		Raw: rawBytes,
-	}, nil
-}
-
-func convertAWSMetadataOptionsToMAPI(fldPath *field.Path, capiMetadataOpts *capav1.InstanceMetadataOptions) (mapiv1.MetadataServiceOptions, []string, field.ErrorList) {
+func convertCAPAMetadataOptionsToMAPA(fldPath *field.Path, capiMetadataOpts *capav1.InstanceMetadataOptions) (mapiv1.MetadataServiceOptions, []string, field.ErrorList) {
 	var (
 		errors   field.ErrorList
 		warnings []string
@@ -317,8 +317,8 @@ func convertAWSMetadataOptionsToMAPI(fldPath *field.Path, capiMetadataOpts *capa
 	return metadataOpts, warnings, nil
 }
 
-func convertAWSResourceReferenceToMAPI(capiReference capav1.AWSResourceReference) mapiv1.AWSResourceReference {
-	filters := convertAWSFiltersToMAPI(capiReference.Filters)
+func convertCAPAResourceReferenceToMAPA(capiReference capav1.AWSResourceReference) mapiv1.AWSResourceReference {
+	filters := convertCAPAFiltersToMAPA(capiReference.Filters)
 
 	return mapiv1.AWSResourceReference{
 		ID:      capiReference.ID,
@@ -326,7 +326,7 @@ func convertAWSResourceReferenceToMAPI(capiReference capav1.AWSResourceReference
 	}
 }
 
-func convertAWSFiltersToMAPI(capiFilters []capav1.Filter) []mapiv1.Filter {
+func convertCAPAFiltersToMAPA(capiFilters []capav1.Filter) []mapiv1.Filter {
 	mapiFilters := []mapiv1.Filter{}
 	for _, filter := range capiFilters {
 		mapiFilters = append(mapiFilters, mapiv1.Filter{
@@ -338,7 +338,7 @@ func convertAWSFiltersToMAPI(capiFilters []capav1.Filter) []mapiv1.Filter {
 	return mapiFilters
 }
 
-func convertAWSTagsToMAPI(capiTags capav1.Tags) []mapiv1.TagSpecification {
+func convertCAPATagsToMAPA(capiTags capav1.Tags) []mapiv1.TagSpecification {
 	mapiTags := []mapiv1.TagSpecification{}
 	for key, value := range capiTags {
 		mapiTags = append(mapiTags, mapiv1.TagSpecification{
@@ -350,11 +350,11 @@ func convertAWSTagsToMAPI(capiTags capav1.Tags) []mapiv1.TagSpecification {
 	return mapiTags
 }
 
-func convertAWSSecurityGroupstoMAPI(sgs []capav1.AWSResourceReference) []mapiv1.AWSResourceReference {
+func convertCAPASecurityGroupstoMAPA(sgs []capav1.AWSResourceReference) []mapiv1.AWSResourceReference {
 	mapiSGs := []mapiv1.AWSResourceReference{}
 
 	for _, sg := range sgs {
-		mapiAWSResourceRef := convertAWSResourceReferenceToMAPI(sg)
+		mapiAWSResourceRef := convertCAPAResourceReferenceToMAPA(sg)
 
 		mapiSGs = append(mapiSGs, mapiAWSResourceRef)
 	}
@@ -362,7 +362,7 @@ func convertAWSSecurityGroupstoMAPI(sgs []capav1.AWSResourceReference) []mapiv1.
 	return mapiSGs
 }
 
-func convertAWSSpotMarketOptionsToMAPI(capiSpotMarketOptions *capav1.SpotMarketOptions) *mapiv1.SpotMarketOptions {
+func convertCAPASpotMarketOptionsToMAPA(capiSpotMarketOptions *capav1.SpotMarketOptions) *mapiv1.SpotMarketOptions {
 	if capiSpotMarketOptions == nil {
 		return nil
 	}
@@ -372,7 +372,7 @@ func convertAWSSpotMarketOptionsToMAPI(capiSpotMarketOptions *capav1.SpotMarketO
 	}
 }
 
-func convertAWSTenancyToMAPI(fldPath *field.Path, capiTenancy string) (mapiv1.InstanceTenancy, *field.Error) {
+func convertCAPATenancyToMAPA(fldPath *field.Path, capiTenancy string) (mapiv1.InstanceTenancy, *field.Error) {
 	switch capiTenancy {
 	case "default":
 		return mapiv1.DefaultTenancy, nil
@@ -387,27 +387,27 @@ func convertAWSTenancyToMAPI(fldPath *field.Path, capiTenancy string) (mapiv1.In
 	}
 }
 
-func convertAWSBlockDeviceMappingSpecToMAPI(rootVolume *capav1.Volume, nonRootVolumes []capav1.Volume) []mapiv1.BlockDeviceMappingSpec {
+func convertCAPAVolumesToMAPA(rootVolume *capav1.Volume, nonRootVolumes []capav1.Volume) []mapiv1.BlockDeviceMappingSpec {
 	blockDeviceMapping := []mapiv1.BlockDeviceMappingSpec{}
 
 	if rootVolume != nil && *rootVolume != (capav1.Volume{}) {
-		blockDeviceMapping = append(blockDeviceMapping, volumeToBlockDeviceMappingSpec(*rootVolume))
+		blockDeviceMapping = append(blockDeviceMapping, convertCAPAVolumeToMAPA(*rootVolume))
 	}
 
 	for _, volume := range nonRootVolumes {
-		blockDeviceMapping = append(blockDeviceMapping, volumeToBlockDeviceMappingSpec(volume))
+		blockDeviceMapping = append(blockDeviceMapping, convertCAPAVolumeToMAPA(volume))
 	}
 
 	return blockDeviceMapping
 }
 
-func volumeToBlockDeviceMappingSpec(volume capav1.Volume) mapiv1.BlockDeviceMappingSpec {
+func convertCAPAVolumeToMAPA(volume capav1.Volume) mapiv1.BlockDeviceMappingSpec {
 	bdm := mapiv1.BlockDeviceMappingSpec{
 		EBS: &mapiv1.EBSBlockDeviceSpec{
 			DeleteOnTermination: ptr.To(true), // This is forced to true for now as CAPI doesn't support changing it.
 			VolumeSize:          ptr.To(volume.Size),
 			Encrypted:           volume.Encrypted,
-			KMSKey:              convertKMSKeyToMAPI(volume.EncryptionKey),
+			KMSKey:              convertCAPAKMSKeyToMAPA(volume.EncryptionKey),
 		},
 	}
 
@@ -426,7 +426,7 @@ func volumeToBlockDeviceMappingSpec(volume capav1.Volume) mapiv1.BlockDeviceMapp
 	return bdm
 }
 
-func convertKMSKeyToMAPI(kmsKey string) mapiv1.AWSResourceReference {
+func convertCAPAKMSKeyToMAPA(kmsKey string) mapiv1.AWSResourceReference {
 	if strings.HasPrefix(kmsKey, "arn:") {
 		return mapiv1.AWSResourceReference{
 			ARN: &kmsKey,
